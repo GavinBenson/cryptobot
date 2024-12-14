@@ -90,6 +90,8 @@ def downloadCsv():
     time.sleep(1)
     submitButton.click()
 
+    #
+
     # Select Monthly Frequency
    # dropdown = driver.find_element(By.CLASS_NAME, "custom-native-select")
     #dropdown.click()
