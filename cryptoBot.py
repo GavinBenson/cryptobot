@@ -1,5 +1,6 @@
 import os
 import time
+import sqlite3
 import pandas as pd
 import plotly.express as px
 from selenium import webdriver
@@ -13,6 +14,8 @@ init(autoreset=True)
 
 # Constants
 download_path = r'C:\Users\Mohammad Bin Salman\Downloads'
+db_path = 'crypto_data.db'
+database_path = 'crypto_data.db'
 cryptodf = pd.DataFrame({
     'Name': ['Bitcoin', 'Ethereum', 'Ripple', 'Tether', 'Solana', 'Binance-Coin', 'Dogecoin', 'USD-Coin', 'Cardano', 'TRON'],
     'Ticker': ['BTC', 'ETH', 'XRP', 'USDT', 'SOL', 'BNB', 'DOGE', 'USDC', 'ADA', 'TRX']
@@ -31,9 +34,14 @@ ticker_colors = {
     'TRX': Fore.RED
 }
 
+
+start_date = ''
+end_date = ''
+
 # Utility functions
 def clear_console():
     os.system('cls' if os.name == 'nt' else 'clear')
+
 
 def select_crypto():
     clear_console()
@@ -47,6 +55,7 @@ def select_crypto():
 
     print(Fore.GREEN + "=" * 80 + Style.RESET_ALL)
     return input("Enter the ticker: ").strip().upper()
+
 
 def download_csv(selected_crypto):
     driver = webdriver.Firefox()
@@ -73,11 +82,12 @@ def download_csv(selected_crypto):
         time.sleep(1)
         submit_button.click()
 
-        time.sleep(5)
+        time.sleep(3)
         driver.find_element(By.CLASS_NAME, "export").click()
         time.sleep(2)
     finally:
         driver.quit()
+
 
 def load_latest_csv(download_path, crypto_name):
     csv_files = [f for f in os.listdir(download_path) if f.endswith(".csv")]
@@ -89,16 +99,57 @@ def load_latest_csv(download_path, crypto_name):
     latest_file = max(matching_files, key=lambda f: os.path.getctime(os.path.join(download_path, f)))
     return pd.read_csv(os.path.join(download_path, latest_file))
 
+
 def clean_crypto_data(df):
     df.rename(columns={df.columns[0]: 'Date', df.columns[5]: 'Price'}, inplace=True)
     df['Price'] = df['Price'].replace(r'[^0-9.]', '', regex=True).astype(float)
     df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
     return df.dropna(subset=['Date', 'Price'])
 
+
+def save_to_database(df, crypto_name):
+    # Connect to the database
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+
+    # Create the table if it doesn't exist
+    cursor.execute(f'''
+    CREATE TABLE IF NOT EXISTS {crypto_name} (
+        Date TEXT,
+        Price REAL
+    )
+    ''')
+
+    # Insert data
+    df.to_sql(crypto_name, conn, if_exists='replace', index=False)
+
+    # Debug statement: Verify rows
+    cursor.execute(f'SELECT * FROM {crypto_name} LIMIT 5')
+    rows = cursor.fetchall()
+    print(Fore.CYAN + f"Debug: Sample data from {crypto_name} table:" + Style.RESET_ALL)
+    for row in rows:
+        print(row)
+
+    # Close the connection
+    conn.close()
+
+def load_from_database(crypto_name, start_date=None, end_date=None):
+    conn = sqlite3.connect(database_path)
+    query = f"SELECT * FROM {crypto_name}"
+    if start_date and end_date:
+        query += f" WHERE Date BETWEEN '{start_date}' AND '{end_date}'"
+    else:
+        query += " ORDER BY Date ASC"  # Return all data if no date range is provided
+    df = pd.read_sql_query(query, conn, parse_dates=['Date'])
+    print('testestestest')
+    conn.close()
+    return df
+
 def filter_date_range(df):
     start_date = pd.to_datetime(input("Enter start date (YYYY-MM-DD): ").strip())
     end_date = pd.to_datetime(input("Enter end date (YYYY-MM-DD): ").strip())
     return df[(df['Date'] >= start_date) & (df['Date'] <= end_date)]
+
 
 def plot_crypto_data(df, crypto_name):
     fig = px.line(
@@ -118,13 +169,55 @@ def plot_crypto_data(df, crypto_name):
     )
     fig.show()
 
-# Main script
+
 if __name__ == "__main__":
     selected_crypto = select_crypto()
-    download_csv(selected_crypto)
 
-    crypto_name = cryptodf[cryptodf['Ticker'] == selected_crypto]['Name'].values[0]
-    raw_data = load_latest_csv(download_path, crypto_name)
-    cleaned_data = clean_crypto_data(raw_data)
-    filtered_data = filter_date_range(cleaned_data)
-    plot_crypto_data(filtered_data, crypto_name)
+    # Check if the data for today already exists in the database
+    conn = sqlite3.connect(db_path)
+    query = f"SELECT Date FROM {selected_crypto} ORDER BY Date DESC LIMIT 1"
+    cursor = conn.cursor()
+    try:
+        cursor.execute(query)
+        last_date = cursor.fetchone()
+        conn.close()
+
+        if last_date and pd.to_datetime(last_date[0]).date() == pd.Timestamp.today().date():
+            print(Fore.GREEN + f"Data for {selected_crypto} is up to date in the database." + Style.RESET_ALL)
+        else:
+            print(Fore.YELLOW + "Downloading and updating data..." + Style.RESET_ALL)
+            download_csv(selected_crypto)
+
+            # Process and save new data
+            crypto_name = cryptodf[cryptodf['Ticker'] == selected_crypto]['Name'].values[0]
+            raw_data = load_latest_csv(download_path, crypto_name)
+            cleaned_data = clean_crypto_data(raw_data)
+            save_to_database(cleaned_data, selected_crypto)
+
+    except sqlite3.OperationalError:
+        # Table does not exist, so download and populate data
+        conn.close()
+        print(Fore.RED + "No existing data found. Downloading new data..." + Style.RESET_ALL)
+        download_csv(selected_crypto)
+
+        crypto_name = cryptodf[cryptodf['Ticker'] == selected_crypto]['Name'].values[0]
+        raw_data = load_latest_csv(download_path, crypto_name)
+        cleaned_data = clean_crypto_data(raw_data)
+        save_to_database(cleaned_data, selected_crypto)
+
+    # Load data from the database
+    print(Fore.YELLOW + "Loading data from the database..." + Style.RESET_ALL)
+    start_date_input = input("Enter start date (YYYY-MM-DD) or press Enter to use all data: ").strip()
+    end_date_input = input("Enter end date (YYYY-MM-DD) or press Enter to use all data: ").strip()
+
+    start_date = pd.to_datetime(start_date_input) if start_date_input else None
+    end_date = pd.to_datetime(end_date_input) if end_date_input else None
+
+    data_from_db = load_from_database(selected_crypto, start_date, end_date)
+
+    # Plot data
+    if not data_from_db.empty:
+        crypto_name = cryptodf[cryptodf['Ticker'] == selected_crypto]['Name'].values[0]
+        plot_crypto_data(data_from_db, crypto_name)
+    else:
+        print(Fore.RED + "No data available for the selected date range. Please try again." + Style.RESET_ALL)
