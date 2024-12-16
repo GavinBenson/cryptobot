@@ -34,7 +34,6 @@ ticker_colors = {
     'TRX': Fore.RED
 }
 
-
 start_date = ''
 end_date = ''
 
@@ -141,7 +140,6 @@ def load_from_database(crypto_name, start_date=None, end_date=None):
     else:
         query += " ORDER BY Date ASC"  # Return all data if no date range is provided
     df = pd.read_sql_query(query, conn, parse_dates=['Date'])
-    print('testestestest')
     conn.close()
     return df
 
@@ -151,15 +149,47 @@ def filter_date_range(df):
     return df[(df['Date'] >= start_date) & (df['Date'] <= end_date)]
 
 
-def plot_crypto_data(df, crypto_name):
+def select_second_crypto(selected_crypto):
+    """
+    Allow the user to select a second cryptocurrency that is different from the first.
+    """
+    clear_console()
+    print(Fore.GREEN + "=" * 80 + Style.RESET_ALL)
+    print(Fore.YELLOW + "Select a second cryptocurrency to plot:" + Style.RESET_ALL)
+    
+    for _, row in cryptodf.iterrows():
+        ticker = row['Ticker']
+        if ticker != selected_crypto:  # Exclude the first selected crypto
+            color = ticker_colors.get(ticker, Fore.WHITE)
+            print(f"{color}{row['Name']} ({ticker}){Style.RESET_ALL}")
+
+    print(Fore.GREEN + "=" * 80 + Style.RESET_ALL)
+    return input("Enter the ticker for the second cryptocurrency: ").strip().upper()
+
+
+def plot_crypto_data(df1, crypto1_name, df2=None, crypto2_name=None):
+    """
+    Plot one or two cryptocurrencies on the same chart.
+    """
     fig = px.line(
-        df,
+        df1,
         x="Date",
         y="Price",
-        title=f"{crypto_name} Price Over Time",
+        title=f"{crypto1_name} Price Over Time",
         labels={"Price": "Price (USD)", "Date": "Date"},
         markers=True
     )
+    
+    if df2 is not None and crypto2_name is not None:
+        fig.add_scatter(
+            x=df2["Date"],
+            y=df2["Price"],
+            mode="lines+markers",
+            name=f"{crypto2_name} Price",
+            line=dict(dash="dash")
+        )
+        fig.update_layout(title=f"{crypto1_name} and {crypto2_name} Prices Over Time")
+
     fig.update_layout(
         xaxis_title="Date",
         yaxis_title="Price (USD)",
@@ -171,12 +201,22 @@ def plot_crypto_data(df, crypto_name):
 
 
 if __name__ == "__main__":
+    # Step 1: Choose whether to plot 1 or 2 cryptocurrencies
+    clear_console()
+    print(Fore.GREEN + "=" * 80 + Style.RESET_ALL)
+    print(Fore.YELLOW + "How many cryptocurrencies would you like to plot?" + Style.RESET_ALL)
+    print("1. One cryptocurrency")
+    print("2. Two cryptocurrencies")
+    print(Fore.GREEN + "=" * 80 + Style.RESET_ALL)
+    choice = input("Enter your choice (1 or 2): ").strip()
+
+    # First cryptocurrency selection
     selected_crypto = select_crypto()
 
-    # Check if the data for today already exists in the database
+    # Check and update data for the first cryptocurrency
     conn = sqlite3.connect(db_path)
-    query = f"SELECT Date FROM {selected_crypto} ORDER BY Date DESC LIMIT 1"
     cursor = conn.cursor()
+    query = f"SELECT Date FROM {selected_crypto} ORDER BY Date DESC LIMIT 1"
     try:
         cursor.execute(query)
         last_date = cursor.fetchone()
@@ -187,37 +227,72 @@ if __name__ == "__main__":
         else:
             print(Fore.YELLOW + "Downloading and updating data..." + Style.RESET_ALL)
             download_csv(selected_crypto)
-
-            # Process and save new data
             crypto_name = cryptodf[cryptodf['Ticker'] == selected_crypto]['Name'].values[0]
             raw_data = load_latest_csv(download_path, crypto_name)
             cleaned_data = clean_crypto_data(raw_data)
             save_to_database(cleaned_data, selected_crypto)
 
     except sqlite3.OperationalError:
-        # Table does not exist, so download and populate data
         conn.close()
         print(Fore.RED + "No existing data found. Downloading new data..." + Style.RESET_ALL)
         download_csv(selected_crypto)
-
         crypto_name = cryptodf[cryptodf['Ticker'] == selected_crypto]['Name'].values[0]
         raw_data = load_latest_csv(download_path, crypto_name)
         cleaned_data = clean_crypto_data(raw_data)
         save_to_database(cleaned_data, selected_crypto)
 
-    # Load data from the database
+    # Load data for the first cryptocurrency
     print(Fore.YELLOW + "Loading data from the database..." + Style.RESET_ALL)
     start_date_input = input("Enter start date (YYYY-MM-DD) or press Enter to use all data: ").strip()
     end_date_input = input("Enter end date (YYYY-MM-DD) or press Enter to use all data: ").strip()
-
     start_date = pd.to_datetime(start_date_input) if start_date_input else None
     end_date = pd.to_datetime(end_date_input) if end_date_input else None
 
-    data_from_db = load_from_database(selected_crypto, start_date, end_date)
+    data_from_db1 = load_from_database(selected_crypto, start_date, end_date)
+    crypto1_name = cryptodf[cryptodf['Ticker'] == selected_crypto]['Name'].values[0]
 
-    # Plot data
-    if not data_from_db.empty:
-        crypto_name = cryptodf[cryptodf['Ticker'] == selected_crypto]['Name'].values[0]
-        plot_crypto_data(data_from_db, crypto_name)
+    # If user chose to plot two cryptocurrencies
+    if choice == '2':
+        # Second cryptocurrency selection
+        selected_crypto2 = select_second_crypto(selected_crypto)
+
+        # Check and update data for the second cryptocurrency
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        query = f"SELECT Date FROM {selected_crypto2} ORDER BY Date DESC LIMIT 1"
+        try:
+            cursor.execute(query)
+            last_date = cursor.fetchone()
+            conn.close()
+
+            if last_date and pd.to_datetime(last_date[0]).date() == pd.Timestamp.today().date():
+                print(Fore.GREEN + f"Data for {selected_crypto2} is up to date in the database." + Style.RESET_ALL)
+            else:
+                print(Fore.YELLOW + "Downloading and updating data..." + Style.RESET_ALL)
+                download_csv(selected_crypto2)
+                crypto_name = cryptodf[cryptodf['Ticker'] == selected_crypto2]['Name'].values[0]
+                raw_data = load_latest_csv(download_path, crypto_name)
+                cleaned_data = clean_crypto_data(raw_data)
+                save_to_database(cleaned_data, selected_crypto2)
+
+        except sqlite3.OperationalError:
+            conn.close()
+            print(Fore.RED + "No existing data found. Downloading new data..." + Style.RESET_ALL)
+            download_csv(selected_crypto2)
+            crypto_name = cryptodf[cryptodf['Ticker'] == selected_crypto2]['Name'].values[0]
+            raw_data = load_latest_csv(download_path, crypto_name)
+            cleaned_data = clean_crypto_data(raw_data)
+            save_to_database(cleaned_data, selected_crypto2)
+
+        # Load data for the second cryptocurrency
+        print(Fore.YELLOW + "Loading data from the database..." + Style.RESET_ALL)
+        data_from_db2 = load_from_database(selected_crypto2, start_date, end_date)
+        crypto2_name = cryptodf[cryptodf['Ticker'] == selected_crypto2]['Name'].values[0]
+
+        # Plot both cryptocurrencies
+        plot_crypto_data(data_from_db1, crypto1_name, data_from_db2, crypto2_name)
+
     else:
-        print(Fore.RED + "No data available for the selected date range. Please try again." + Style.RESET_ALL)
+        # Plot only the first cryptocurrency
+        plot_crypto_data(data_from_db1, crypto1_name)
+        
