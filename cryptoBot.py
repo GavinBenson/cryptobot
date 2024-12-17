@@ -5,21 +5,27 @@ import pandas as pd
 import plotly.express as px
 from datetime import timedelta, datetime
 from selenium import webdriver
+from selenium.webdriver.firefox.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from colorama import Fore, Style, init
 
+
 # Initialize colorama
 init(autoreset=True)
 
 # Constants
-DOWNLOAD_PATH = r'C:\Users\Mohammad Bin Salman\Downloads'
-DB_PATH = 'crypto_data.db'
+PROJECT_PATH = os.path.dirname(os.path.realpath(__file__))  # Get the script directory
+DOWNLOAD_PATH = os.path.join(PROJECT_PATH, 'downloads', 'crypto_data')  # Set a specific directory for downloads
+os.makedirs(DOWNLOAD_PATH, exist_ok=True)  # Create the directory if it doesn't exist
+DB_PATH = os.path.join(PROJECT_PATH, 'crypto_data.db')  # Set database path to the same directory
+
 CRYPTO_DF = pd.DataFrame({
     'Name': ['Bitcoin', 'Ethereum', 'Ripple', 'Tether', 'Solana', 'Binance-Coin', 'Dogecoin', 'USD-Coin', 'Cardano', 'TRON'],
     'Ticker': ['BTC', 'ETH', 'XRP', 'USDT', 'SOL', 'BNB', 'DOGE', 'USDC', 'ADA', 'TRX']
 })
+
 TICKER_COLORS = {
     'BTC': Fore.YELLOW, 'ETH': Fore.CYAN, 'XRP': Fore.BLUE,
     'USDT': Fore.GREEN, 'SOL': Fore.MAGENTA, 'BNB': Fore.LIGHTYELLOW_EX,
@@ -28,7 +34,15 @@ TICKER_COLORS = {
 
 # Utility Functions
 def clear_console():
-    os.system('cls' if os.name == 'nt' else 'clear')
+    # Try clearing the console in the most common environments
+    if os.name == 'nt':  # For Windows
+        os.system('cls')
+    else:  # For Linux or macOS
+        os.system('clear')
+    
+    # For some environments where the above doesn't work, you can try this fallback method:
+    print("\033[H\033[J", end="")
+
 
 def display_crypto_options(exclude_ticker=None):
     for _, row in CRYPTO_DF.iterrows():
@@ -96,7 +110,21 @@ def is_data_up_to_date(ticker):
 
 def download_crypto_data(ticker):
     print(f"[DEBUG] Starting download for {ticker}...")
-    driver = webdriver.Firefox()
+
+    # Configure Firefox Profile to change the download path
+    options = Options()
+    profile = webdriver.FirefoxProfile()
+
+    # Set custom download path
+    profile.set_preference("browser.download.folderList", 2)  # 2 means custom path
+    profile.set_preference("browser.download.dir", DOWNLOAD_PATH)  # Set the directory
+    profile.set_preference("browser.download.useDownloadDir", True)
+    profile.set_preference("browser.helperApps.neverAsk.saveToDisk", "text/csv")
+
+    options.profile = profile  # Associate the profile with the Firefox options
+
+    driver = webdriver.Firefox(options=options)
+
     try:
         crypto_name = crypto_name_from_ticker(ticker).lower()
         url = f"https://coincodex.com/crypto/{crypto_name}/historical-data/"
@@ -167,59 +195,72 @@ def select_date_range():
 
 def plot_crypto_data(df1, name1, df2=None, name2=None):
     print(f"[DEBUG] Plotting data for {name1} (and {name2} if provided)...")
+    
     fig = px.line(df1, x="Date", y="Price", title=f"{name1} Price Over Time", markers=True)
-    if df2 is not None:
+    # Before plotting
+    #print(df1.head())  # Check if data is loaded correctly
+    
+    # If df2 is provided, add the second cryptocurrency data
+    if df2 is not None and name2 is not None:
         fig.add_scatter(x=df2["Date"], y=df2["Price"], mode="lines+markers", name=name2)
-    fig.update_layout(
-        xaxis_title="Date",
-        yaxis_title="Price (USD)",
-        xaxis_rangeslider_visible=True,
-        template="plotly_dark",
-    )
+        # Update title when two cryptos are being plotted
+        fig.update_layout(
+            title=f"{name1} and {name2} Price Over Time",
+            xaxis_title="Date",
+            yaxis_title="Price (USD)",
+            xaxis_rangeslider_visible=True,
+            template="plotly_dark",
+        )
+    else:
+        # Keep the title with only one crypto
+        fig.update_layout(
+            title=f"{name1} Price Over Time",
+            xaxis_title="Date",
+            yaxis_title="Price (USD)",
+            xaxis_rangeslider_visible=True,
+            template="plotly_dark",
+        )
+    
+    # Show the plot
     fig.show()
+    clear_console()
 
-# Main Logic
 if __name__ == "__main__":
     while True:
         clear_console()
         choice = input("Would you like to plot (1) One or (2) Two cryptocurrencies? ").strip()
+
         first_ticker = select_crypto()
 
         if not is_data_up_to_date(first_ticker):
             print(f"[DEBUG] Data for {first_ticker} is outdated or missing. Downloading new data...")
             download_crypto_data(first_ticker)
             raw_data = load_latest_csv(DOWNLOAD_PATH, crypto_name_from_ticker(first_ticker))
-            cleaned_data = clean_crypto_data(raw_data)
-            save_to_database(cleaned_data, first_ticker)
-        else:
-            print(f"[DEBUG] Data for {first_ticker} is up-to-date. Skipping download.")
+            clean_data = clean_crypto_data(raw_data)
+            save_to_database(clean_data, first_ticker)
 
-        data1 = load_from_database(first_ticker)
-        name1 = crypto_name_from_ticker(first_ticker)
-
+        df1 = load_from_database(first_ticker)
         start_date, end_date = select_date_range()
 
-        data1_filtered = data1[(data1['Date'] >= start_date) & (data1['Date'] <= end_date)] if start_date and end_date else data1
+        if start_date and end_date:
+            df1 = df1[(df1['Date'] >= start_date) & (df1['Date'] <= end_date)]
 
-        if choice == '2':
-            second_ticker = select_crypto(f"Select a second cryptocurrency (excluding {first_ticker}):")
+        if choice == "2":
+            # Select second cryptocurrency if the user wants to plot two
+            second_ticker = select_crypto(f"Select a second cryptocurrency to plot (excluding {first_ticker}):")
+
             if not is_data_up_to_date(second_ticker):
                 print(f"[DEBUG] Data for {second_ticker} is outdated or missing. Downloading new data...")
                 download_crypto_data(second_ticker)
                 raw_data = load_latest_csv(DOWNLOAD_PATH, crypto_name_from_ticker(second_ticker))
-                cleaned_data = clean_crypto_data(raw_data)
-                save_to_database(cleaned_data, second_ticker)
-            else:
-                print(f"[DEBUG] Data for {second_ticker} is up-to-date. Skipping download.")
+                clean_data = clean_crypto_data(raw_data)
+                save_to_database(clean_data, second_ticker)
 
-            data2 = load_from_database(second_ticker)
-            name2 = crypto_name_from_ticker(second_ticker)
-            data2_filtered = data2[(data2['Date'] >= start_date) & (data2['Date'] <= end_date)] if start_date and end_date else data2
-            plot_crypto_data(data1_filtered, name1, data2_filtered, name2)
+            df2 = load_from_database(second_ticker)
+
+            if start_date and end_date:
+                df2 = df2[(df2['Date'] >= start_date) & (df2['Date'] <= end_date)]
+
+            plot_crypto_data(df1, crypto_name_from_ticker(first_ticker), df2, crypto_name_from_ticker(second_ticker))
         else:
-            plot_crypto_data(data1_filtered, name1)
-
-        restart = input("\nWould you like to analyze another cryptocurrency? (y/n): ").strip().lower()
-        if restart != 'y':
-            print(Fore.GREEN + "Thank you for using Cryptobot! Goodbye!" + Style.RESET_ALL)
-            break
+            plot_crypto_data(df1, crypto_name_from_ticker(first_ticker))
